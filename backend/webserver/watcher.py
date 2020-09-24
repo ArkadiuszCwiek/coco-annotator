@@ -3,6 +3,7 @@ from watchdog.observers import Observer
 
 from config import Config
 from database import ImageModel
+from .util.thumbnails import generate_thumbnail
 
 import re
 
@@ -17,11 +18,18 @@ class ImageFolderHandler(FileSystemEventHandler):
     def on_any_event(self, event):
 
         path = event.dest_path if event.event_type == "moved" else event.src_path
-                
+
+        if event.is_directory:
+            # Listen to directory events as some file systems don't generate
+            # per-file `deleted` events when moving/deleting directories
+            if event.event_type == 'deleted':
+                self._log(f'Deleting images from database {path}')
+                ImageModel.objects(path=re.compile('^' + re.escape(path))).delete()
+            return
+
         if (
-            event.is_directory
             # check if its a hidden file
-            or bool(re.search(r'\/\..*?\/', path))
+            bool(re.search(r'\/\..*?\/', path))
             or not path.lower().endswith(self.pattern)
         ):
             return
@@ -32,11 +40,13 @@ class ImageFolderHandler(FileSystemEventHandler):
 
         if image is None and event.event_type != 'deleted':
             self._log(f'Adding new file to database: {path}')
-            ImageModel.create_from_path(path).save()
+            image = ImageModel.create_from_path(path).save()
+            generate_thumbnail(image)
 
         elif event.event_type == 'moved':
             self._log(f'Moving image from {event.src_path} to {path}')
             image.update(path=path)
+            generate_thumbnail(image)
 
         elif event.event_type == 'deleted':
             self._log(f'Deleting image from database {path}')
